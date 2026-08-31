@@ -52,8 +52,9 @@ TTL_SH_TTL ?= 2h
 ifeq ($(DEV_REGISTRY),local)
   DEV_IMG ?= localhost:5000/medik8s/$(OPERATOR_NAME):dev
 else
-  DEV_IMG ?= ttl.sh/medik8s-$(OPERATOR_NAME)-$(shell head -c 32 /dev/urandom | base64 | tr -dc 'a-z0-9' | head -c 8):$(TTL_SH_TTL)
+  DEV_IMG ?= ttl.sh/medik8s-$(OPERATOR_NAME)-$(shell cat /dev/urandom | tr -dc 'a-z0-9' | head -c 8):$(TTL_SH_TTL)
 endif
+DEV_IMG := $(DEV_IMG)
 
 # Detect kubectl or oc
 KUBECTL ?= $(shell \
@@ -121,12 +122,13 @@ ifeq ($(DEV_REGISTRY),local)
 	@patched=""; \
 	for f in $$(find install/ -name '*.yaml' 2>/dev/null); do \
 		if grep -q 'imagePullPolicy: Always' "$$f"; then \
-			sed -i.bak 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/' "$$f" && rm -f "$$f.bak"; \
+			cp "$$f" "$$f.dev-bak"; \
+			sed -i 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/' "$$f"; \
 			patched="$$patched $$f"; \
 			echo "  Patched $$f imagePullPolicy for dev build."; \
 		fi; \
 	done; \
-	restore() { for f in $$patched; do sed -i.bak 's/imagePullPolicy: IfNotPresent/imagePullPolicy: Always/' "$$f" && rm -f "$$f.bak"; done; }; \
+	restore() { for f in $$patched; do mv "$$f.dev-bak" "$$f"; done; }; \
 	TMPTAR=$$(mktemp /tmp/dev-image-XXXXXX.tar); \
 	cleanup() { rm -f "$$TMPTAR"; restore; }; \
 	trap cleanup EXIT; \
@@ -146,13 +148,19 @@ endif
 dev-deploy: dev-build install $(if $(ENVSUBST),envsubst) ## Build, load image, install CRDs, and deploy operator
 	@# Backup kustomization.yaml, set dev image, build+apply, then restore (even on failure).
 	@cp config/manager/kustomization.yaml config/manager/kustomization.yaml.dev-bak; \
-	trap 'mv config/manager/kustomization.yaml.dev-bak config/manager/kustomization.yaml' EXIT; \
+	KUST_OUT=$$(mktemp /tmp/dev-kustomize-XXXXXX.yaml); \
+	trap 'rm -f "$$KUST_OUT"; mv config/manager/kustomization.yaml.dev-bak config/manager/kustomization.yaml' EXIT; \
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(DEV_IMG) && cd ../.. && \
 	ENVSUBST_BIN="$(ENVSUBST)"; \
+	$(KUSTOMIZE) build config/default >"$$KUST_OUT" 2> >(grep -v "Warning: 'commonLabels'" >&2); \
+	if [ ! -s "$$KUST_OUT" ]; then \
+		echo "Error: kustomize build produced no output."; \
+		exit 1; \
+	fi; \
 	if [ -n "$$ENVSUBST_BIN" ] && [ -x "$$ENVSUBST_BIN" ]; then \
-		export IMG=$(DEV_IMG) && $(KUSTOMIZE) build config/default 2> >(grep -v "Warning: 'commonLabels'" >&2) | $$ENVSUBST_BIN | $(KUBECTL) apply -f -; \
+		export IMG=$(DEV_IMG) && $$ENVSUBST_BIN < "$$KUST_OUT" | $(KUBECTL) apply -f -; \
 	else \
-		$(KUSTOMIZE) build config/default 2> >(grep -v "Warning: 'commonLabels'" >&2) | $(KUBECTL) apply -f -; \
+		$(KUBECTL) apply -f "$$KUST_OUT"; \
 	fi
 	@# Detect the operator namespace from kustomization files (reliable, no cluster query needed).
 	@# The namespace may be in config/default/ or in a component/patch kustomization.yaml.
@@ -318,7 +326,7 @@ dev-shell: ## Open a shell on a Kind node (use NODE=<name>, default: first worke
 	if [ -z "$$TARGET" ]; then \
 		TARGET=$$(echo "$$NODES" | head -1); \
 	fi; \
-	if ! echo "$$NODES" | grep -qx "$$TARGET"; then \
+	if ! echo "$$NODES" | grep -Fqx -- "$$TARGET"; then \
 		echo "Error: '$$TARGET' is not a node in the cluster. Available: $$(echo $$NODES | tr '\n' ' ')"; \
 		exit 1; \
 	fi; \

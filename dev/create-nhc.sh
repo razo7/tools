@@ -33,8 +33,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate duration format
-if ! [[ "${NHC_UNHEALTHY_DURATION}" =~ ^[0-9]+(s|m|h)$ ]]; then
-    echo "Error: NHC_UNHEALTHY_DURATION must be a duration (e.g. 300s, 5m, 1h), got: '${NHC_UNHEALTHY_DURATION}'"
+if ! [[ "${NHC_UNHEALTHY_DURATION}" =~ ^([0-9]*\.?[0-9]+(ns|us|µs|ms|s|m|h))+$ ]]; then
+    echo "Error: NHC_UNHEALTHY_DURATION must be a Go duration (e.g. 300s, 5m, 1h30m, 500ms), got: '${NHC_UNHEALTHY_DURATION}'"
     exit 1
 fi
 
